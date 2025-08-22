@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Données du bateau</title>
+    <meta charset="utf-8">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        body { 
+            margin:0; 
+            font-size: 1.6em;
+        }
+        #map { position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:0; }
+        #sidebar {
+            position:relative;
+            z-index:1;
+            /* background:rgba(255,255,255,0.85); */
+            width:380px;
+            padding:20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .card {
+            background: #f7f7f7;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+            padding: 16px;
+        }
+        .card h2 {
+            text-align: center;
+            margin-top: 0;
+            font-size: 1.2em;
+            margin-bottom: 8px;
+        }
+        .card ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .card ul li {
+            margin-bottom: 6px;
+        }
+        .arrow-icon {
+            background: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="sidebar">
+        <div class="card">
+            <h2>Horloge</h2>
+            <table style="width:100%">
+                <tr><td>Date</td><td style="text-align:right"><span id="date">{{ boat.date }}</span></td></tr>
+                <tr><td>Heure</td><td style="text-align:right"><span id="heure">{{ boat.time }}</span></td></tr>
+            </table>
+        </div>
+        <div class="card">
+            <h2>Route fond</h2>
+            <table style="width:100%">
+                <tr><td>Lat</td><td style="text-align:right"><span id="latitude">{{ boat.lat }}</span></td></tr>
+                <tr><td>Long</td><td style="text-align:right"><span id="longitude">{{ boat.long }}</span></td></tr>
+                <tr><td>Cap</td><td style="text-align:right"><span id="cap">{{ boat.heading }}</span></td></tr>
+                <tr><td>VF</td><td style="text-align:right"><span id="vitesse_sol">{{ boat.ground_speed }}</span></td></tr>
+                <tr><td>VFM</td><td style="text-align:right"><span id="vitesse_sol_avg30min">{{ boat.ground_speed_avg_30min }}</span> kt</td></tr>
+            </table>
+        </div>
+        <div class="card">
+            <h2>Route surface</h2>
+            <table style="width:100%">
+                <tr><td>Sonde</td><td style="text-align:right"><span id="profondeur_eau">{{ boat.water_depth }}</span></td></tr>
+                <tr><td>VS</td><td style="text-align:right"><span id="vitesse_eau">{{ boat.water_speed }}</span></td></tr>
+                <tr><td>Temp eau</td><td style="text-align:right"><span id="temp_eau">{{ boat.water_temp }}</span></td></tr>
+            </table>
+        </div>
+        <div class="card">
+            <h2>Vent</h2>
+            <table style="width:100%">
+                <tr><td>Origine</td><td style="text-align:right"><span id="angle_vent">{{ boat.wind_angle }}</span></td></tr>
+                <tr><td>Vitesse</td><td style="text-align:right"><span id="vitesse_vent">{{ boat.wind_speed }}</span></td></tr>
+                <tr>
+                    <td colspan="2" style="text-align:center;">
+                        <svg id="windRose" width="80" height="80" style="margin-top:10px;">
+                            <circle cx="40" cy="40" r="30" fill="#e8e8e8" stroke="#aaa" stroke-width="2"/>
+                            <line id="windArrow" x1="40" y1="40" x2="40" y2="10" stroke="#0077cc" stroke-width="4" stroke-linecap="round"/>
+                        </svg>
+                    </td>
+                </tr>
+            </table>
+        </div>
+    </div>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        // Fonction pour créer une icône flèche orientée
+        function createArrowIcon(angleDeg) {
+            return L.divIcon({
+                className: 'arrow-icon',
+                html: `<svg width="40" height="40" style="transform:rotate(${angleDeg}deg)">
+                    <polygon points="20,5 30,35 20,28 10,35" fill="#0077cc" stroke="#333" stroke-width="2"/>
+                </svg>`,
+                iconSize: [40, 40],
+                iconAnchor: [20, 20]
+            });
+        }
+
+        function dmsToDecimal(dmsStr) {
+            dmsStr = dmsStr.replace(/&#39;/g, "'");
+            let match = dmsStr.match(/(\d+)°([\d\.]+)' ?([NSEW])/);
+            if (!match) return 0;
+            let deg = parseFloat(match[1]);
+            let min = parseFloat(match[2]);
+            let dir = match[3];
+            let dec = deg + min / 60;
+            if (dir === "S" || dir === "W") dec = -dec;
+            return dec;
+        }
+
+        let lat_str = "{{ boat.lat }}";
+        let lon_str = "{{ boat.long }}";
+        let lat = dmsToDecimal(lat_str);
+        let lon = dmsToDecimal(lon_str);
+
+        let savedZoom = localStorage.getItem("mapZoom");
+        let savedLat = localStorage.getItem("mapLat");
+        let savedLon = localStorage.getItem("mapLon");
+
+        let mapZoom = savedZoom ? parseInt(savedZoom) : 13;
+        let mapLat = savedLat ? parseFloat(savedLat) : lat;
+        let mapLon = savedLon ? parseFloat(savedLon) : lon;
+
+        var map = L.map('map').setView([mapLat, mapLon], mapZoom);
+        
+        // var tileLayer = L.tileLayer.pouchDbCached('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        //     maxZoom: 19,
+        //     attribution: '© OpenStreetMap',
+        //     useOnlyCache: false, // true = strict offline, false = télécharge si pas en cache
+        //     saveToCache: true,   // true = sauvegarde les tuiles en cache local
+        //     useCache: true       // true = utilise le cache local
+        // }).addTo(map);
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+
+        // Initialisation du marqueur avec la direction initiale
+        let heading = parseFloat("{{ boat.heading }}") || 0;
+        var marker = L.marker([lat, lon], {icon: createArrowIcon(heading)}).addTo(map);
+        let pathCoords = [[lat, lon]]; // tableau des positions
+        var pathLine = L.polyline(pathCoords, {color: '#0077cc', weight: 3}).addTo(map);
+
+        map.on('moveend zoomend', function() {
+            let center = map.getCenter();
+            localStorage.setItem("mapLat", center.lat);
+            localStorage.setItem("mapLon", center.lng);
+            localStorage.setItem("mapZoom", map.getZoom());
+        });
+
+        function updateBoatData() {
+            fetch('/data')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById("heure").textContent = data.time;
+                    document.getElementById("date").textContent = data.date;
+                    document.getElementById("latitude").textContent = data.lat;
+                    document.getElementById("longitude").textContent = data.long;
+                    document.getElementById("cap").textContent = data.heading;
+                    document.getElementById("vitesse_sol").textContent = data.ground_speed;
+                    document.getElementById("vitesse_sol_avg30min").textContent = Number(data.ground_speed_avg_30min).toFixed(2);
+                    document.getElementById("vitesse_eau").textContent = data.water_speed;
+                    document.getElementById("temp_eau").textContent = data.water_temp;
+                    document.getElementById("profondeur_eau").textContent = data.water_depth;
+                    document.getElementById("angle_vent").textContent = data.wind_angle;
+                    document.getElementById("vitesse_vent").textContent = data.wind_speed;
+                    // Conversion DMS -> décimal pour le marqueur
+                    let lat = dmsToDecimal(data.lat);
+                    let lon = dmsToDecimal(data.long);
+                    let heading = parseFloat(data.heading) || 0;
+
+                    marker.setLatLng([lat, lon]);
+                    marker.setIcon(createArrowIcon(heading));
+
+                    let last = pathCoords[pathCoords.length - 1];
+                    if (!last || last[0] !== lat || last[1] !== lon) {
+                        pathCoords.push([lat, lon]);
+                        pathLine.setLatLngs(pathCoords);
+                    }
+
+                    // Angle et vitesse du vent
+                    let angle = parseFloat(data.wind_angle); // en degrés
+                    let speed = parseFloat(data.wind_speed); // en kt
+
+                    // Limite la longueur max du trait
+                    let maxLen = 28; // pixels
+                    let minLen = 10; // pixels
+                    let len = minLen + Math.min(speed, 30) / 30 * (maxLen - minLen); // 0-30kt
+
+                    // Convertit l'angle (origine du vent) en radians, 0° = nord
+                    let rad = (angle - 90) * Math.PI / 180; // SVG: 0° = droite
+
+                    let x2 = 40 + len * Math.cos(rad);
+                    let y2 = 40 + len * Math.sin(rad);
+
+                    let windArrow = document.getElementById("windArrow");
+                    windArrow.setAttribute("x2", x2);
+                    windArrow.setAttribute("y2", y2);
+                });
+        }
+
+        setInterval(updateBoatData, 10);
+    </script>
+</body>
+</html>
